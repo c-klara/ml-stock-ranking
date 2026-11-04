@@ -1,0 +1,13 @@
+# Virtual environment
+.venv/
+
+# Database and saved models (large, rebuilt by the scripts)
+data/
+models/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

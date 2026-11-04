@@ -1,0 +1,8 @@
+pandas>=2.2
+numpy
+yfinance
+requests
+lxml
+streamlit
+scikit-learn
+joblib
