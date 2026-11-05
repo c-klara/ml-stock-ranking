@@ -14,6 +14,7 @@ Run from the project root:  python -m src.fetch_data
 """
 
 import io
+import time
 import zipfile
 
 import pandas as pd
@@ -32,6 +33,12 @@ from src.database import write_table
 
 # A plain browser-style header: Wikipedia refuses requests without one
 HEADERS = {"User-Agent": "Mozilla/5.0 (student research project)"}
+
+# Download pacing (see download_prices for why this is needed)
+PAUSE_SECONDS = 2          # pause after every batch
+MAX_ATTEMPTS = 3           # first pass + two retries for failed tickers
+RETRY_BATCH_SIZE = 10      # smaller batches when retrying
+RETRY_PAUSE_SECONDS = 30   # wait before each retry round
 
 
 def get_sp500_tickers() -> list[str]:
@@ -53,11 +60,53 @@ def download_prices(tickers: list[str]) -> pd.DataFrame:
     Download daily adjusted close prices and volumes in batches.
 
     Returns a long-format table with one row per stock per trading day.
+
+    Yahoo Finance throttles rapid requests and then wrongly reports large,
+    active stocks as "possibly delisted". We therefore pause between
+    batches and retry every ticker that came back empty, in smaller
+    batches with longer pauses.
     """
     frames = []
-    for i in range(0, len(tickers), BATCH_SIZE):
-        batch = tickers[i : i + BATCH_SIZE]
-        print(f"Downloading tickers {i + 1}-{i + len(batch)} of {len(tickers)}")
+    remaining = list(tickers)
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        batch_size = BATCH_SIZE if attempt == 1 else RETRY_BATCH_SIZE
+        if attempt > 1:
+            print(f"\nRetry {attempt - 1}: {len(remaining)} tickers, "
+                  f"waiting {RETRY_PAUSE_SECONDS}s first")
+            time.sleep(RETRY_PAUSE_SECONDS)
+
+        failed = []
+        for i in range(0, len(remaining), batch_size):
+            batch = remaining[i : i + batch_size]
+            print(f"Downloading tickers {i + 1}-{i + len(batch)} of {len(remaining)}")
+            frame = _download_batch(batch)
+            frames.append(frame)
+            # Tickers with no price rows in this batch failed and are retried
+            got = set(frame.index.get_level_values("ticker")) if len(frame) else set()
+            failed.extend(t for t in batch if t not in got)
+            time.sleep(PAUSE_SECONDS)  # be polite to the API
+
+        remaining = failed
+        if not remaining:
+            break
+
+    if remaining:
+        print(f"\nStill missing after {MAX_ATTEMPTS} attempts: {remaining}")
+
+    prices = pd.concat(frames).reset_index()
+    prices.columns = ["date", "ticker", "close", "volume"]
+    return prices.dropna(subset=["close"])
+
+
+def _download_batch(batch: list[str]) -> pd.DataFrame:
+    """
+    Download one batch and reshape it to long format, indexed by (date, ticker).
+
+    Returns an empty frame if the request fails entirely, so one bad
+    batch never stops the whole download.
+    """
+    try:
         data = yf.download(
             batch,
             start=START_DATE,
@@ -66,14 +115,20 @@ def download_prices(tickers: list[str]) -> pd.DataFrame:
             progress=False,
             threads=True,
         )
-        # Reshape from wide (one column per ticker) to long format
-        close = data["Close"].stack().rename("close")
-        volume = data["Volume"].stack().rename("volume")
-        frames.append(pd.concat([close, volume], axis=1))
+    except Exception as error:  # network errors, throttling
+        print(f"  Batch failed: {error}")
+        return pd.DataFrame()
 
-    prices = pd.concat(frames).reset_index()
-    prices.columns = ["date", "ticker", "close", "volume"]
-    return prices.dropna(subset=["close"])
+    if data.empty:
+        return pd.DataFrame()
+
+    # Reshape from wide (one column per ticker) to long format;
+    # dropna removes the empty rows of tickers that failed
+    close = data["Close"].stack().rename("close")
+    volume = data["Volume"].stack().rename("volume")
+    frame = pd.concat([close, volume], axis=1).dropna(subset=["close"])
+    frame.index.names = ["date", "ticker"]
+    return frame
 
 
 def select_universe(prices: pd.DataFrame, n: int) -> pd.DataFrame:

@@ -18,8 +18,9 @@ DB_PATH = PROJECT_ROOT / "data" / "market.db"
 START_DATE = "2004-01-01"
 END_DATE = "2025-12-31"
 
-# Number of stocks in the universe (the most liquid S&P 500 members)
-N_STOCKS = 300
+# Number of stocks in the universe. 600 > 503 S&P 500 members, so all are kept;
+# the download always fetches all members, so a lower value only filters afterwards.
+N_STOCKS = 600
 
 # Download prices in batches to stay within Yahoo Finance rate limits
 BATCH_SIZE = 50
