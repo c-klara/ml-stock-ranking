@@ -99,18 +99,21 @@ def download_prices(tickers: list[str]) -> pd.DataFrame:
     return prices.dropna(subset=["close"])
 
 
-def _download_batch(batch: list[str]) -> pd.DataFrame:
+def _download_batch(batch: list[str], start: str = START_DATE,
+                    end: str = END_DATE) -> pd.DataFrame:
     """
     Download one batch and reshape it to long format, indexed by (date, ticker).
 
+    The period defaults to the full sample; the live forecast passes a
+    shorter, recent period instead.
     Returns an empty frame if the request fails entirely, so one bad
     batch never stops the whole download.
     """
     try:
         data = yf.download(
             batch,
-            start=START_DATE,
-            end=END_DATE,
+            start=start,
+            end=end,
             auto_adjust=True,  # adjust for splits and dividends
             progress=False,
             threads=True,
@@ -129,6 +132,42 @@ def _download_batch(batch: list[str]) -> pd.DataFrame:
     frame = pd.concat([close, volume], axis=1).dropna(subset=["close"])
     frame.index.names = ["date", "ticker"]
     return frame
+
+
+def fetch_single_ticker(ticker: str, months: int = 15) -> pd.DataFrame:
+    """
+    Download recent daily prices for one stock, for the app's live forecast.
+
+    15 months is enough history for every indicator: momentum needs the
+    last 12 months plus one, volatility the last 3 months.
+
+    Returns the same long format as the `prices` table
+    (date, ticker, close, volume), so the feature code works unchanged.
+    Raises ValueError with a readable message if the ticker is not in the
+    S&P 500 (our models were trained only on S&P 500 stocks) or if Yahoo
+    returns no data.
+    """
+    # Normalise user input: " brk.b " -> "BRK-B" (Yahoo's spelling)
+    ticker = ticker.strip().upper().replace(".", "-")
+
+    if ticker not in get_sp500_tickers():
+        raise ValueError(
+            f"{ticker} is not an S&P 500 stock. Please enter an S&P 500 ticker, "
+            "for example AAPL or MSFT."
+        )
+
+    # Period: from `months` ago until today
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.DateOffset(months=months)
+    frame = _download_batch([ticker], start=start.strftime("%Y-%m-%d"),
+                            end=end.strftime("%Y-%m-%d"))
+
+    if frame.empty:
+        raise ValueError(f"No price data found for {ticker}. Please try again later.")
+
+    prices = frame.reset_index()
+    prices.columns = ["date", "ticker", "close", "volume"]
+    return prices
 
 
 def select_universe(prices: pd.DataFrame, n: int) -> pd.DataFrame:
